@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
 import {transferTimeoutMs} from './data-limits'
 import {decodeBytes, fromJson, libName, noOp, resetTimer} from './utils'
 import type {ActionReceiveContext, DataPayload, JsonValue} from './types'

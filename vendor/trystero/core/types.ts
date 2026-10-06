@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
 import type {OfferManager} from './offer-manager'
 
 export type JsonPrimitive = null | string | number | boolean

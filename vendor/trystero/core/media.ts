@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
 import {maxQueuedDataFrames} from './data-limits'
 import {genId, libName, mkErr} from './utils'
 import type {

@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
 import {schnorr} from '../noble-secp256k1/index'
 import {
   createRelayManager,

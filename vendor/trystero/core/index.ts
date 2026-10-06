@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
 export {default as createStrategy} from './strategy'
 export {default as createTopicStrategy} from './topic-strategy'
 export {hashWith, sha1} from './crypto'

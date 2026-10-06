@@ -8,9 +8,12 @@
 #   - package imports are rewritten to relative paths,
 #   - Trystero's `DEV:` debug logging (stripped by its own bundler) is disabled,
 #   - a handshake field starting with "__" is renamed so the minifier leaves it alone,
-#   - files that don't pass this project's stricter / ES6-targeted type checks
-#     get `// @ts-nocheck`, and the one BigInt `**` (which TypeScript would
-#     down-level to Math.pow when targeting ES6) is rewritten as a shift.
+#   - every file gets `// @ts-nocheck`, since they don't pass this project's
+#     stricter, ES6-targeted checks and their timer types clash with @types/node
+#     (installed by npm ci for Electron) on a full install. Their types are still
+#     available to the editor code that uses them.
+#   - the one BigInt `**` (which TypeScript would down-level to Math.pow when
+#     targeting ES6) is rewritten as a shift.
 set -e
 
 TRYSTERO_TAG="0.26.0"
@@ -39,7 +42,7 @@ perl -pi -e 's/2n \*\* 256n/(1n << 256n)/' vendor/noble-secp256k1/index.ts
 # handshake field differ between builds (e.g. minified vs. debug) and stop them connecting.
 perl -pi -e 's/__trystero_pw/trystero_pw/g' vendor/trystero/core/handshake.ts
 
-for file in vendor/noble-secp256k1/index.ts vendor/trystero/core/peer.ts vendor/trystero/core/signal-handler.ts; do
+for file in vendor/noble-secp256k1/index.ts vendor/trystero/nostr.ts vendor/trystero/core/*.ts; do
 	perl -0pi -e 's/^/\/\/ \@ts-nocheck -- vendored source, see scripts\/vendor_trystero.sh\n/' "$file"
 done
 

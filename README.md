@@ -1,3 +1,5 @@
+<img src="website/logo.svg" alt="" width="96" height="96" />
+
 # DuetBox
 
 DuetBox is a mod of [UltraBox](https://github.com/ultraabox/ultrabox_typescript) for making music with friends in real time.
