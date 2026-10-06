@@ -1,7 +1,7 @@
 {
-	"name": "UltraBox",
-	"version": "2.2.17",
-	"description": "UltraBox is a mod of BeepBox that aims to combine every other beepmod into one.",
+	"name": "DuetBox",
+	"version": "1.0.0",
+	"description": "DuetBox is a mod of UltraBox (a BeepBox mod) for making music together in real time.",
 	"author": "Main",
 	"contributors": [
 		"Neputendo",
@@ -11,7 +11,7 @@
 		"Slarmoo"
 	],
 	"license": "MIT",
-	"homepage": "https://ultraabox.github.io",
+	"homepage": "https://github.com/shrimpsooup2/duetbox",
 	"type": "module",
 	"main": "main.js",
 	"icon": "path.join(__dirname, 'icon.ico')",
@@ -26,11 +26,11 @@
 		"start": "electron ./to_deploy",
 		"package": "electron-packager ./to_deploy --platform=darwin,linux,win32 --arch=ia32,x64 --asar --overwrite && npm run build-offline-html",
 		"package-macos": "electron-packager ./to_deploy --platform=darwin --arch=arm64 --asar --overwrite && npm run build-offline-html",
-		"package-host": "electron-packager ./to_deploy UltraBox --asar --overwrite && npm run build-offline-html"
+		"package-host": "electron-packager ./to_deploy DuetBox --asar --overwrite && npm run build-offline-html"
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/ultraabox/ultrabox_typescript.git"
+		"url": "git+https://github.com/shrimpsooup2/duetbox.git"
 	},
 	"devDependencies": {
 		"@electron/packager": "^18.3.5",

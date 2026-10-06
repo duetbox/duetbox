@@ -1,7 +1,7 @@
 {
-	"name": "UltraBox",
-	"short_name": "UltraBox",
-	"description": "UltraBox is a mod of BeepBox that aims to combine every other beepmod into one.",
+	"name": "DuetBox",
+	"short_name": "DuetBox",
+	"description": "DuetBox is a mod of UltraBox (a BeepBox mod) for making music together in real time.",
 	"scope": "/",
 	"start_url": ".",
 	"display": "browser",

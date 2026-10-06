@@ -24,7 +24,9 @@ export function prettyNumber(value: number): string {
 
 export class EditorConfig {
     public static readonly version: string = "2.2.17"; // Currently using patch versions in display (unlike JB)
-    public static readonly versionDisplayName: string = "UltraBox " + EditorConfig.version;
+    // DuetBox's own version; `version` above is the UltraBox release it's based on.
+    public static readonly duetBoxVersion: string = "1.0.0";
+    public static readonly versionDisplayName: string = "DuetBox " + EditorConfig.duetBoxVersion;
 
     public static readonly releaseNotesURL: string = "./patch_notes.html";
 
