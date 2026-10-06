@@ -11,7 +11,7 @@
 		"Slarmoo"
 	],
 	"license": "MIT",
-	"homepage": "https://github.com/shrimpsooup2/duetbox",
+	"homepage": "https://duetbox.github.io",
 	"type": "module",
 	"main": "main.js",
 	"icon": "path.join(__dirname, 'icon.ico')",

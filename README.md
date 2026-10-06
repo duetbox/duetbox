@@ -59,6 +59,17 @@ Trystero and [noble-secp256k1](https://github.com/paulmillr/noble-secp256k1) (wh
 They're compiled together with the editor by the normal build, so nothing extra is needed. To update them, change the versions at the top of
 [scripts/vendor_trystero.sh](scripts/vendor_trystero.sh) and run it.
 
+## Publishing the website
+
+The [Deploy website to GitHub Pages](.github/workflows/deploy_pages.yml) workflow builds the site and publishes the
+[website/](website) folder every time `main` changes. To use it, open the repository's **Settings → Pages** and set
+**Source** to **GitHub Actions**.
+
+GitHub Pages serves a repository named `<owner>.github.io` at the root of `https://<owner>.github.io/`, and any other
+repository at `https://<owner>.github.io/<repository name>/`. Songs don't need anything special: like in UltraBox, the
+song comes after a `#` (`https://duetbox.github.io/#u5N...`) and is read by the page itself, and invite links look like
+`https://duetbox.github.io/?duet=ABCD-EFGH`.
+
 ## Code
 
 The code is divided into several folders, like in BeepBox.
