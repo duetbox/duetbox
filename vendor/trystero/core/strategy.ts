@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
 import {decrypt, deriveRoomNamespace, encrypt, genKey, sha1} from './crypto'
 import {OfferManager} from './offer-manager'
 import {createPasswordHandshake} from './handshake'

@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
 import {shouldActivatePassiveRoom} from './signal-handler'
 import createStrategy from './strategy'
 import {mkErr, selfId, toJson} from './utils'

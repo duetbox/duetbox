@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
 // Physical data frames include the room envelope around an action frame.
 export const maxActionFrameBytes = 16 * 1024
 export const maxRoomTokenBytes = 128

@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
 import {all, alloc, mkErr, resetTimer} from './utils'
 import type {OfferRecord, PeerHandle} from './types'
 

@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
 import {decodeBytes, encodeBytes, libName, toHex} from './utils'
 
 const algo = 'AES-GCM'

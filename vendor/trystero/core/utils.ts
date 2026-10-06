@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
 import type {BaseRoomConfig, RelayConfig, SocketClient} from './types'
 
 const {floor, min, sin} = Math
