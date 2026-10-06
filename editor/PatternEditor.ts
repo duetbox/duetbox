@@ -3,7 +3,7 @@
 import { getLocalStorageItem, Chord, Transition, Config } from "../synth/SynthConfig";
 import { NotePin, Note, makeNotePin, FilterSettings, Channel, Pattern, Instrument, FilterControlPoint } from "../synth/synth";
 import { ColorConfig } from "./ColorConfig";
-import { DuetPointer, SongDocument } from "./SongDocument";
+import { DuetPointer, DuetPreview, SongDocument } from "./SongDocument";
 import { DrawnPointer, drawPointers } from "./DuetPointers";
 import { Slider } from "./HTMLWrapper";
 import { SongEditor } from "./SongEditor";
@@ -43,8 +43,9 @@ export class PatternEditor {
     private readonly _svgBackground: SVGRectElement = SVG.rect({ x: "0", y: "0", "pointer-events": "none", fill: "url(#patternEditorNoteBackground" + this._barOffset + ")" });
     private _svgNoteContainer: SVGSVGElement = SVG.svg();
     private readonly _svgPlayhead: SVGRectElement = SVG.rect({ x: "0", y: "0", width: "4", fill: ColorConfig.playhead, "pointer-events": "none" });
-    // DuetBox: other people's mouse pointers.
+    // DuetBox: other people's mouse pointers, and the notes they're about to place.
     private readonly _svgRemotePointers: SVGGElement = SVG.g({ "pointer-events": "none" });
+    private readonly _svgRemotePreviews: SVGGElement = SVG.g({ "pointer-events": "none" });
     private readonly _selectionRect: SVGRectElement = SVG.rect({ class: "dashed-line dash-move", fill: ColorConfig.boxSelectionFill, stroke: ColorConfig.hoverPreview, "stroke-width": 2, "stroke-dasharray": "5, 3", "fill-opacity": "0.4", "pointer-events": "none", visibility: "hidden" });
     private readonly _svgPreview: SVGPathElement = SVG.path({ fill: "none", stroke: ColorConfig.hoverPreview, "stroke-width": "2", "pointer-events": "none" });
     public modDragValueLabel: HTMLDivElement = HTML.div({ width: "90", "text-anchor": "start", contenteditable: "true", style: "display: flex, justify-content: center; align-items:center; position:absolute; pointer-events: none;", "dominant-baseline": "central", });
@@ -57,6 +58,7 @@ export class PatternEditor {
         this._svgBackground,
         this._selectionRect,
         this._svgNoteContainer,
+        this._svgRemotePreviews,
         this._svgPreview,
         this._svgPlayhead,
         this._svgRemotePointers,
@@ -2428,27 +2430,105 @@ export class PatternEditor {
         this.renderRemotePointers();
     }
 
-    /** DuetBox: where a pointer event is over this pattern, in parts and pitches, or null if it's elsewhere. */
-    public getPointerPosition(event: PointerEvent): DuetPointer | null {
+    /** DuetBox: where a point on the screen is over this pattern, in parts and pitches, or null if it's elsewhere. */
+    public getPointerPosition(clientX: number, clientY: number): DuetPointer | null {
         if (!this._interactive || this._barOffset != 0) return null;
         const boundingRect: DOMRect = this._svg.getBoundingClientRect();
-        if (boundingRect.width == 0 || event.clientX < boundingRect.left || event.clientX > boundingRect.right || event.clientY < boundingRect.top || event.clientY > boundingRect.bottom) return null;
-        const pixelX: number = (event.clientX - boundingRect.left) * this._editorWidth / boundingRect.width;
-        const pixelY: number = (event.clientY - boundingRect.top) * this._editorHeight / boundingRect.height;
-        return { area: "pattern", channel: this._doc.channel, bar: this._doc.bar, x: pixelX / this._partWidth, y: this._pitchCount - pixelY / this._pitchHeight + this._octaveOffset };
+        if (boundingRect.width == 0 || clientX < boundingRect.left || clientX > boundingRect.right || clientY < boundingRect.top || clientY > boundingRect.bottom) return null;
+        const pixelX: number = (clientX - boundingRect.left) * this._editorWidth / boundingRect.width;
+        const pixelY: number = (clientY - boundingRect.top) * this._editorHeight / boundingRect.height;
+        const pointer: DuetPointer = { area: "pattern", channel: this._doc.channel, bar: this._doc.bar, x: pixelX / this._partWidth, y: this._pitchCount - pixelY / this._pitchHeight + this._octaveOffset };
+        const preview: DuetPreview | null = this._getDuetPreview();
+        if (preview != null) pointer.preview = preview;
+        return pointer;
     }
 
-    /** DuetBox: draws the pointers of other people who are looking at the same pattern. */
+    /** DuetBox: what the hover preview is showing right now (see _updatePreview), so others can see it too. */
+    private _getDuetPreview(): DuetPreview | null {
+        if (this._usingTouch || !this._mouseOver || this._mouseDown || !this._cursor.valid) return null;
+        if (this._cursorAtStartOfSelection()) return { kind: "edge", at: this._doc.selection.patternSelectionStart };
+        if (this._cursorAtEndOfSelection()) return { kind: "edge", at: this._doc.selection.patternSelectionEnd };
+        if (this._cursorIsInSelection()) return { kind: "range", start: this._doc.selection.patternSelectionStart, end: this._doc.selection.patternSelectionEnd };
+        // Very long notes (e.g. recorded modulation) would make every pointer message huge.
+        if (this._cursor.pins.length < 2 || this._cursor.pins.length > 64) return null;
+        const pins: number[] = [];
+        for (const pin of this._cursor.pins) pins.push(pin.time, pin.interval, pin.size);
+        return { kind: "note", pitch: this._cursor.pitch, start: this._cursor.start, pins: pins };
+    }
+
+    /** DuetBox: draws the pointers of other people, and the notes they're about to place on this pattern. */
     public renderRemotePointers(): void {
         if (!this._interactive || this._barOffset != 0) return;
         const pointers: DrawnPointer[] = [];
+        while (this._svgRemotePreviews.firstChild != null) this._svgRemotePreviews.removeChild(this._svgRemotePreviews.firstChild);
         if (this._doc.duet != null) {
             for (const pointer of this._doc.duet.getRemotePointers()) {
-                if (pointer.area != "pattern" || pointer.channel != this._doc.channel || pointer.bar != this._doc.bar) continue;
-                pointers.push({ x: pointer.x * this._partWidth, y: this._pitchHeight * (this._pitchCount - (pointer.y - this._octaveOffset)), color: pointer.color, name: pointer.name });
+                if (pointer.area != "pattern") continue;
+                const x: number = pointer.x * this._partWidth;
+                if (pointer.channel == this._doc.channel && pointer.bar == this._doc.bar) {
+                    pointers.push({ x: x, y: this._pitchHeight * (this._pitchCount - (pointer.y - this._octaveOffset)), color: pointer.color, name: pointer.name });
+                    if (pointer.preview != undefined && this._isValidRemotePreview(pointer.preview)) {
+                        try {
+                            this._drawRemotePreview(pointer.preview, pointer.color);
+                        } catch (error) {
+                            // Someone else's preview must never break drawing the pattern.
+                            console.error("DuetBox: couldn't draw a note preview", error);
+                        }
+                    }
+                } else if (pointer.channel >= 0 && pointer.channel < this._doc.song.getChannelCount()) {
+                    // On another pattern: show roughly where, see-through, and say which pattern.
+                    // Their rows may not match ours (e.g. drums vs. pitches), so place it by height.
+                    const rows: number = this._doc.song.getChannelIsMod(pointer.channel) ? Config.modCount : this._doc.song.getChannelIsNoise(pointer.channel) ? Config.drumCount : this._doc.getVisiblePitchCount();
+                    const row: number = pointer.y - this._channelOctaveOffset(pointer.channel);
+                    pointers.push({ x: x, y: this._editorHeight * (rows - row) / rows, color: pointer.color, name: pointer.name, detail: "(ch " + (pointer.channel + 1) + ", bar " + (pointer.bar + 1) + ")", faded: true });
+                }
             }
         }
         drawPointers(this._svgRemotePointers, pointers, this._editorWidth, this._editorHeight);
+    }
+
+    /** Previews come from the network, so check they describe a note that could be on this pattern. */
+    private _isValidRemotePreview(preview: DuetPreview): boolean {
+        const parts: number = this._doc.song.partsPerPattern;
+        const isWhole = (value: number): boolean => value == Math.round(value);
+        if (preview.kind == "edge") return preview.at >= 0 && preview.at <= parts;
+        if (preview.kind == "range") return preview.start >= 0 && preview.start <= preview.end && preview.end <= parts;
+        if (!isWhole(preview.pitch) || !isWhole(preview.start) || preview.start < 0 || preview.start > parts) return false;
+        let lastTime: number = -1;
+        for (let i: number = 0; i + 2 < preview.pins.length; i += 3) {
+            const time: number = preview.pins[i];
+            const pitch: number = preview.pitch + preview.pins[i + 1];
+            if (!isWhole(time) || time < 0 || time < lastTime || preview.start + time > parts || !isWhole(pitch) || pitch < 0 || pitch > this._getMaxPitch()) return false;
+            if (preview.pins[i + 2] < 0) return false;
+            lastTime = time;
+        }
+        return lastTime > 0;
+    }
+
+    private _drawRemotePreview(preview: DuetPreview, color: string): void {
+        const path: SVGPathElement = SVG.path({ fill: "none", stroke: color, "stroke-width": "2" });
+        const bottom: number = this._pitchToPixelHeight(-0.5);
+        let left: number;
+        let right: number;
+        if (preview.kind == "note") {
+            const pins: NotePin[] = [];
+            for (let i: number = 0; i + 2 < preview.pins.length; i += 3) pins.push(makeNotePin(preview.pins[i + 1], preview.pins[i], preview.pins[i + 2]));
+            this._drawNote(path, preview.pitch, preview.start, pins, (this._pitchHeight - this._pitchBorder) / 2 + 1, true, this._octaveOffset);
+            this._svgRemotePreviews.appendChild(path);
+            return;
+        } else if (preview.kind == "edge") {
+            left = this._partWidth * preview.at - 4;
+            right = this._partWidth * preview.at + 4;
+        } else {
+            left = this._partWidth * preview.start - 2;
+            right = this._partWidth * preview.end + 2;
+        }
+        path.setAttribute("d", "M " + prettyNumber(left) + " 0 L " + prettyNumber(left) + " " + prettyNumber(bottom) + " L " + prettyNumber(right) + " " + prettyNumber(bottom) + " L " + prettyNumber(right) + " 0 z");
+        this._svgRemotePreviews.appendChild(path);
+    }
+
+    private _channelOctaveOffset(channel: number): number {
+        return channel < this._doc.song.pitchChannelCount ? this._doc.getBaseVisibleOctave(channel) * Config.pitchesPerOctave : 0;
     }
 
     private _redrawNotePatterns(): void {

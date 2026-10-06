@@ -489,12 +489,12 @@ export class TrackEditor {
 		this._updatePreview();
 	}
 
-	/** DuetBox: where a pointer event is over the track editor, in bars and channels, or null if it's elsewhere. */
-	public getPointerPosition(event: PointerEvent): DuetPointer | null {
+	/** DuetBox: where a point on the screen is over the track editor, in bars and channels, or null if it's elsewhere. */
+	public getPointerPosition(clientX: number, clientY: number): DuetPointer | null {
 		const boundingRect: DOMRect = this.container.getBoundingClientRect();
-		if (boundingRect.width == 0 || event.clientX < boundingRect.left || event.clientX > boundingRect.right || event.clientY < boundingRect.top || event.clientY > boundingRect.bottom) return null;
-		const channel: number = (event.clientY - boundingRect.top - Config.barEditorHeight) / ChannelRow.patternHeight;
-		return { area: "track", channel: this._doc.channel, bar: this._doc.bar, x: (event.clientX - boundingRect.left) / this._barWidth, y: channel };
+		if (boundingRect.width == 0 || clientX < boundingRect.left || clientX > boundingRect.right || clientY < boundingRect.top || clientY > boundingRect.bottom) return null;
+		const channel: number = (clientY - boundingRect.top - Config.barEditorHeight) / ChannelRow.patternHeight;
+		return { area: "track", channel: this._doc.channel, bar: this._doc.bar, x: (clientX - boundingRect.left) / this._barWidth, y: channel };
 	}
 
 	/** DuetBox: draws other people's pointers over the track editor. */

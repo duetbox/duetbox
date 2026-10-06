@@ -37,7 +37,7 @@ import { KeyboardLayout } from "./KeyboardLayout";
 import { PatternEditor } from "./PatternEditor";
 import { Piano } from "./Piano";
 import { Prompt } from "./Prompt";
-import { SongDocument } from "./SongDocument";
+import { DuetPointer, SongDocument } from "./SongDocument";
 import { SongDurationPrompt } from "./SongDurationPrompt";
 import { SustainPrompt } from "./SustainPrompt";
 import { SongRecoveryPrompt } from "./SongRecoveryPrompt";
@@ -56,6 +56,7 @@ import { AddSamplesPrompt } from "./AddSamplesPrompt";
 import { ShortenerConfigPrompt } from "./ShortenerConfigPrompt";
 import { DuetController, DuetSession } from "./DuetSession";
 import { DuetPrompt, duetStatusColor, duetStatusText } from "./DuetPrompt";
+import { DuetPointerOverlay, markDuetAnchor } from "./DuetPointers";
 
 const { button, div, input, select, span, optgroup, option, canvas } = HTML;
 
@@ -1265,6 +1266,7 @@ export class SongEditor {
     );
 
     private readonly _duet: DuetController = new DuetController(this._doc);
+    private readonly _duetPointers: DuetPointerOverlay;
     private readonly _duetStatusDot: HTMLSpanElement = span({ class: "duetStatusDot" });
     private readonly _duetButtonLabel: HTMLSpanElement = span("Duet");
     private readonly _duetButton: HTMLButtonElement = button({ class: "duetButton", title: "Edit this song with friends in real time" }, this._duetStatusDot, this._duetButtonLabel);
@@ -1579,10 +1581,31 @@ export class SongEditor {
         this._duetButton.addEventListener("click", () => this._openPrompt("duet"));
         this._duet.listen(this._renderDuetButton);
         this._renderDuetButton();
-        this._duet.pointerLocator = (event: PointerEvent) => this._patternEditor.getPointerPosition(event) || this._trackEditor.getPointerPosition(event);
+        this._duetPointers = new DuetPointerOverlay(this.mainLayer);
+        // These move around depending on each person's settings and selected channel.
+        markDuetAnchor(this._instrumentSettingsTextRow, "instrument-title");
+        markDuetAnchor(this._instrumentsButtonRow, "instrument-buttons");
+        markDuetAnchor(this._instrumentRemoveButton, "instrument-remove");
+        markDuetAnchor(this._instrumentAddButton, "instrument-add");
+        markDuetAnchor(this._instrumentCopyGroup, "instrument-copy");
+        markDuetAnchor(this._instrumentExportGroup, "instrument-export");
+        this._duet.pointerLocator = (clientX: number, clientY: number) => {
+            const target: Element | null = document.elementFromPoint(clientX, clientY);
+            if (target == null) return null;
+            // The editors describe pointers in song terms; anything else is anchored to the element it's over.
+            if (this._patternEditor.container.contains(target)) {
+                const pointer: DuetPointer | null = this._patternEditor.getPointerPosition(clientX, clientY);
+                if (pointer != null) return pointer;
+            } else if (this._trackEditor.container.contains(target)) {
+                const pointer: DuetPointer | null = this._trackEditor.getPointerPosition(clientX, clientY);
+                if (pointer != null) return pointer;
+            }
+            return this._duetPointers.locate(target, clientX, clientY);
+        };
         this._duet.onPointersChanged = () => {
             this._patternEditor.renderRemotePointers();
             this._trackEditor.renderRemotePointers();
+            this._duetPointers.render(this._doc.duet == null ? [] : this._doc.duet.getRemotePointers());
         };
         this._fileMenu.addEventListener("change", this._fileMenuHandler);
         this._editMenu.addEventListener("change", this._editMenuHandler);
@@ -3478,6 +3501,11 @@ export class SongEditor {
             this._settingsArea.scrollTop = this._settingsArea.scrollHeight;
             this._doc.addedEnvelope = false;
         }
+
+        // DuetBox: other people's pointers follow the controls they're over as the layout
+        // changes, and ours is sent again in case the edit changed what's under it.
+        this._duetPointers.redraw();
+        this._duet.refreshPointer();
 
          // Writeback to mods if control key is held while moving a slider.
          this.handleModRecording();

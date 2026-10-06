@@ -14,7 +14,7 @@ Everything UltraBox does still works, and songs are regular UltraBox song URLs, 
 3. They open the link and click **Join room**.
 
 Everyone edits the same song from their own computer or phone, and sees each other's changes as they happen.
-You can see each other's mouse pointers, and a colored outline shows which pattern each person is working on.
+You can see each other's mouse pointers anywhere in the editor, along with the note each person is about to place, and a colored outline shows which pattern each person is working on.
 
 - Undo only undoes your own edits, not other people's.
 - If the person who created the room leaves, someone else takes over automatically and the room keeps going.
