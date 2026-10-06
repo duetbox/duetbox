@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+	<title>DuetBox</title>
+	<defs>
+		<linearGradient id="box" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a3150"/><stop offset="1" stop-color="#151021"/></linearGradient>
+		<radialGradient id="halfA" gradientUnits="userSpaceOnUse" cx="190" cy="150" r="400"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#cfc8b8"/></radialGradient>
+		<radialGradient id="halfB" gradientUnits="userSpaceOnUse" cx="190" cy="150" r="400"><stop offset="0" stop-color="#5a566a"/><stop offset="1" stop-color="#0b0a10"/></radialGradient>
+		<linearGradient id="noteA" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#cfc8b8"/></linearGradient>
+		<linearGradient id="noteB" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a566a"/><stop offset="1" stop-color="#0b0a10"/></linearGradient>
+		<linearGradient id="rim" x1="0.15" y1="0" x2="0.85" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="0.45" stop-color="#a9a6b8"/><stop offset="1" stop-color="#3a3646"/></linearGradient>
+		<radialGradient id="sphere" cx="0.5" cy="0.5" r="0.5"><stop offset="0.7" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.35"/></radialGradient>
+		<linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+		<clipPath id="disc"><circle cx="256" cy="256" r="180"/></clipPath>
+		<filter id="discShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000" flood-opacity="0.55"/></filter>
+		<filter id="curlShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#000" flood-opacity="0.45"/></filter>
+		<filter id="soften" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="9"/></filter>
+		<filter id="noteShadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="3" stdDeviation="3.5" flood-color="#000" flood-opacity="0.45"/></filter>
+	</defs>
+	<rect x="16" y="16" width="480" height="480" rx="112" fill="url(#box)"/><rect x="17.5" y="17.5" width="477" height="477" rx="110.5" fill="none" stroke="#fff" stroke-opacity="0.12" stroke-width="3"/>
+	<circle cx="256" cy="256" r="193" fill="url(#rim)" filter="url(#discShadow)"/>
+	<g clip-path="url(#disc)">
+		<circle cx="256" cy="256" r="180" fill="url(#halfB)"/>
+		<path d="M 256 76 A 180 180 0 0 0 256 436 A 90.0 90.0 0 0 0 256 256 A 90.0 90.0 0 0 1 256 76 Z" fill="url(#halfA)" transform="rotate(45 256 256)" filter="url(#curlShadow)"/>
+		<circle cx="256" cy="256" r="180" fill="url(#sphere)"/>
+	</g>
+	<g filter="url(#noteShadow)" fill="url(#noteA)"><ellipse cx="307.0" cy="221.2" rx="31.5" ry="23.4" transform="rotate(-22 307.0 221.2)"/><rect x="324.3" y="127.6" width="11.2" height="93.6" rx="5.6"/><path d="M 335.5 127.6 C 340.9 151.0, 378.7 158.2, 366.1 199.6 C 364.3 176.2, 348.1 167.2, 335.5 167.2 Z"/></g>
+	<g filter="url(#noteShadow)" fill="url(#noteB)"><ellipse cx="179.8" cy="348.4" rx="31.5" ry="23.4" transform="rotate(-22 179.8 348.4)"/><rect x="197.0" y="254.8" width="11.2" height="93.6" rx="5.6"/><path d="M 208.2 254.8 C 213.6 278.2, 251.4 285.4, 238.8 326.8 C 237.0 303.4, 220.8 294.4, 208.2 294.4 Z"/></g>
+	<g clip-path="url(#disc)"><ellipse cx="238" cy="137.2" rx="129.6" ry="64.8" fill="url(#gloss)" opacity="0.8" filter="url(#soften)"/></g>
+</svg>
