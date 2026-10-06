@@ -1,0 +1,717 @@
+// @ts-nocheck -- vendored source, see scripts/vendor_trystero.sh
+import {
+  maxRoomFrameBytes,
+  maxQueuedDataFrames,
+  pendingDataTimeoutMs
+} from './data-limits'
+import {all, alloc, candidateType, libName, resetTimer, toError} from './utils'
+import type {BaseRoomConfig, PeerHandle, PeerHandlers, Signal} from './types'
+
+const iceTimeout = 15_000
+const iceCandidateSettleMs = 150
+const disconnectedCloseDelayMs = 5_000
+const iceCandidateEvent = 'icecandidate'
+const iceStateEvent = 'icegatheringstatechange'
+const iceConnectionStateEvent = 'iceconnectionstatechange'
+const offerType = 'offer'
+const answerType = 'answer'
+const outOfRangePattern = /out of range/i
+const maxPendingRemoteCandidates = 128
+const maxRemoteCandidateSdpLength = 8_192
+
+type SdpDescription = {
+  type: RTCSdpType
+  sdp: string
+}
+
+const rewriteMdnsCandidatesToLoopback = (sdp: string): string =>
+  sdp.replace(/ (\S+\.local) (\d+) typ host/g, ' 127.0.0.1 $2 typ host')
+
+export default (
+  initiator: boolean,
+  {
+    trickleIce,
+    rtcConfig,
+    rtcPolyfill,
+    turnConfig,
+    _test_only_mdnsHostFallbackToLoopback
+  }: BaseRoomConfig
+): PeerHandle => {
+  const pc = new (rtcPolyfill ?? RTCPeerConnection)({
+    iceServers: defaultIceServers.concat(turnConfig ?? []),
+    ...rtcConfig
+  })
+
+  const handlers: PeerHandlers = {}
+  const pendingIceGathering = new Set<() => void>()
+  const pendingSignals: Signal[] = []
+  const pendingData: ArrayBuffer[] = []
+  let pendingDataTimer: ReturnType<typeof setTimeout> | null = null
+  const shouldTrickleIce = trickleIce !== false
+  const pendingRemoteCandidates: RTCIceCandidateInit[] = []
+  const pendingTracks: Array<{track: MediaStreamTrack; stream: MediaStream}> =
+    []
+  let resolveInitialOffer: ((signal: Signal | void) => void) | undefined
+  let makingOffer = false
+  let isSettingRemoteAnswerPending = false
+  let dataChannel: RTCDataChannel | null = null
+  let disconnectedCloseTimer: number | null = null
+  let didEmitClose = false
+
+  const settleInitialOffer = (signal?: Signal): void => {
+    if (resolveInitialOffer) {
+      resolveInitialOffer(signal)
+      resolveInitialOffer = undefined
+    }
+  }
+
+  const clearDisconnectedCloseTimer = (): null =>
+    (disconnectedCloseTimer = resetTimer(disconnectedCloseTimer))
+
+  const emitClose = (): void => {
+    if (didEmitClose) {
+      return
+    }
+
+    didEmitClose = true
+    pendingIceGathering.forEach(finish => finish())
+    pendingDataTimer = resetTimer(pendingDataTimer)
+    pendingData.length = 0
+    clearDisconnectedCloseTimer()
+    handlers.close?.()
+  }
+
+  const emitSignal = (signal: Signal): void => {
+    if (signal.type === offerType) {
+      settleInitialOffer(signal)
+      // getOffer() already hands pre-connection offers to the signaling strategy.
+      if (!handlers.signal && !pc.remoteDescription) {
+        return
+      }
+    }
+
+    if (handlers.signal) {
+      handlers.signal(signal)
+    } else {
+      pendingSignals.push(signal)
+    }
+  }
+
+  const appendSignalHandler = (handler: (signal: Signal) => void): void => {
+    const previousSignalHandler = handlers.signal
+
+    handlers.signal = signal => {
+      previousSignalHandler?.(signal)
+      handler(signal)
+    }
+
+    if (pendingSignals.length > 0) {
+      const queuedSignals = pendingSignals.splice(0)
+      queuedSignals.forEach(signal => handlers.signal?.(signal))
+    }
+  }
+
+  const normalizeSdp = (sdp: string): string =>
+    _test_only_mdnsHostFallbackToLoopback
+      ? rewriteMdnsCandidatesToLoopback(sdp)
+      : sdp
+
+  const normalizeCandidate = (
+    candidate: RTCIceCandidateInit
+  ): RTCIceCandidateInit => {
+    if (
+      !_test_only_mdnsHostFallbackToLoopback ||
+      typeof candidate.candidate !== 'string'
+    ) {
+      return candidate
+    }
+
+    const normalizedCandidate = rewriteMdnsCandidatesToLoopback(
+      candidate.candidate
+    )
+
+    return normalizedCandidate === candidate.candidate
+      ? candidate
+      : {...candidate, candidate: normalizedCandidate}
+  }
+
+  const localDescriptionSignal = (
+    peerConnection: RTCPeerConnection
+  ): SdpDescription => ({
+    type: (peerConnection.localDescription?.type ?? offerType) as RTCSdpType,
+    sdp: normalizeSdp(peerConnection.localDescription?.sdp ?? '')
+  })
+
+  const getRemoteUfrag = (): string | null => {
+    const sdp = pc.remoteDescription?.sdp
+
+    if (!sdp) {
+      return null
+    }
+
+    const match = sdp.match(/a=ice-ufrag:([^\s]+)/)
+    return match?.[1] ?? null
+  }
+
+  const getRemoteMediaSectionCount = (): number =>
+    (pc.remoteDescription?.sdp?.match(/^m=/gm) ?? []).length
+
+  const canApplyRemoteCandidate = (candidate: RTCIceCandidateInit): boolean => {
+    if (!pc.remoteDescription) {
+      return false
+    }
+
+    const remoteMLineCount = getRemoteMediaSectionCount()
+
+    if (
+      typeof candidate.sdpMLineIndex === 'number' &&
+      remoteMLineCount > 0 &&
+      candidate.sdpMLineIndex >= remoteMLineCount
+    ) {
+      return false
+    }
+
+    const remoteUfrag = getRemoteUfrag()
+
+    if (
+      remoteUfrag &&
+      candidate.usernameFragment &&
+      candidate.usernameFragment !== remoteUfrag
+    ) {
+      return false
+    }
+
+    return true
+  }
+
+  const addIceCandidateSafe = async (
+    candidate: RTCIceCandidateInit
+  ): Promise<boolean> => {
+    try {
+      await pc.addIceCandidate(candidate)
+      return true
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        outOfRangePattern.test(err.message) &&
+        typeof candidate.sdpMLineIndex === 'number'
+      ) {
+        return false
+      }
+
+      throw err
+    }
+  }
+
+  const queueRemoteCandidate = (candidate: RTCIceCandidateInit): void => {
+    if (pendingRemoteCandidates.length >= maxPendingRemoteCandidates) {
+      pendingRemoteCandidates.shift()
+    }
+    pendingRemoteCandidates.push(candidate)
+  }
+
+  const flushPendingRemoteCandidates = async (): Promise<void> => {
+    if (!pc.remoteDescription || pendingRemoteCandidates.length === 0) {
+      return
+    }
+
+    const remoteUfrag = getRemoteUfrag()
+    const queuedCandidates = pendingRemoteCandidates.splice(0)
+    const stillPending: RTCIceCandidateInit[] = []
+
+    for (const candidate of queuedCandidates) {
+      if (
+        remoteUfrag &&
+        candidate.usernameFragment &&
+        candidate.usernameFragment !== remoteUfrag
+      ) {
+        continue
+      }
+
+      if (!canApplyRemoteCandidate(candidate)) {
+        stillPending.push(candidate)
+        continue
+      }
+
+      const didApply = await addIceCandidateSafe(candidate)
+
+      if (!didApply) {
+        stillPending.push(candidate)
+      }
+    }
+
+    stillPending.forEach(queueRemoteCandidate)
+  }
+
+  const addRemoteCandidate = async (
+    candidate: RTCIceCandidateInit
+  ): Promise<void> => {
+    if (canApplyRemoteCandidate(candidate)) {
+      const didApply = await addIceCandidateSafe(candidate)
+
+      if (!didApply) {
+        queueRemoteCandidate(candidate)
+      }
+      return
+    }
+
+    queueRemoteCandidate(candidate)
+  }
+
+  const setupDataChannel = (channel: RTCDataChannel): void => {
+    channel.binaryType = 'arraybuffer'
+    channel.bufferedAmountLowThreshold = 0xffff
+    const failData = (): void => {
+      console.warn(
+        `${libName}: invalid or excessive data before handler registration; disconnecting peer`
+      )
+      channel.close()
+      pc.close()
+      emitClose()
+    }
+    channel.onmessage = e => {
+      const data = e.data as ArrayBuffer
+      if (didEmitClose) {
+        return
+      }
+      if (
+        (!(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) ||
+        data.byteLength > maxRoomFrameBytes
+      ) {
+        failData()
+        return
+      }
+
+      if (handlers.data) {
+        handlers.data(data)
+      } else {
+        if (pendingData.length >= maxQueuedDataFrames) {
+          failData()
+          return
+        }
+        if (!pendingDataTimer) {
+          pendingDataTimer = setTimeout(failData, pendingDataTimeoutMs)
+        }
+        pendingData.push(data)
+      }
+    }
+    channel.onopen = () => handlers.connect?.()
+    channel.onclose = emitClose
+    channel.onerror = ({error}) => {
+      if (
+        didEmitClose ||
+        (error?.errorDetail === 'sctp-failure' &&
+          (error.sctpCauseCode === 12 ||
+            /^User-Initiated Abort\b/.test(error.message)))
+      ) {
+        return
+      }
+
+      handlers.error?.(toError(error, 'data channel error'))
+    }
+  }
+
+  const configuredIceServers =
+    rtcConfig?.iceServers ?? defaultIceServers.concat(turnConfig ?? [])
+  const hasServerUrlPattern = (pattern: RegExp): boolean =>
+    configuredIceServers.some(({urls}) =>
+      (Array.isArray(urls) ? urls : [urls]).some(url => pattern.test(url))
+    )
+  const expectsTurnCandidate = hasServerUrlPattern(/^turns?:/i)
+  const expectsStunCandidate =
+    !expectsTurnCandidate && hasServerUrlPattern(/^stuns?:/i)
+  const targetCandidatePattern = expectsTurnCandidate
+    ? /\btyp relay\b/
+    : expectsStunCandidate
+      ? /\btyp (?:srflx|relay|prflx)\b/
+      : /\btyp (?:host|srflx|relay|prflx)\b/
+  const waitForIceGathering = async (
+    peerConnection: RTCPeerConnection
+  ): Promise<SdpDescription> => {
+    await new Promise<void>(resolve => {
+      let timeout: ReturnType<typeof setTimeout> | null = null
+      let settleTimeout: ReturnType<typeof setTimeout> | null = null
+      const finish = (): void => {
+        resetTimer(timeout)
+        resetTimer(settleTimeout)
+        peerConnection.removeEventListener(iceStateEvent, checkState)
+        peerConnection.removeEventListener(iceCandidateEvent, onCandidate)
+        pendingIceGathering.delete(finish)
+        resolve()
+      }
+      const scheduleSettle = (candidateLine = ''): void => {
+        const sdp = `${peerConnection.localDescription?.sdp ?? ''}\n${candidateLine}`
+        // Nontrickle peers cannot use candidates gathered after signaling.
+        if (targetCandidatePattern.test(sdp)) {
+          resetTimer(settleTimeout)
+          settleTimeout = setTimeout(finish, iceCandidateSettleMs)
+        }
+      }
+      const checkState = (): void => {
+        if (peerConnection.iceGatheringState === 'complete' || didEmitClose) {
+          finish()
+        } else {
+          scheduleSettle()
+        }
+      }
+      const onCandidate = (event: Event): void => {
+        const {candidate} = event as RTCPeerConnectionIceEvent
+        if (candidate) {
+          scheduleSettle(candidate.candidate)
+        } else {
+          finish()
+        }
+      }
+      pendingIceGathering.add(finish)
+      timeout = setTimeout(finish, iceTimeout)
+      peerConnection.addEventListener(iceStateEvent, checkState)
+      peerConnection.addEventListener(iceCandidateEvent, onCandidate)
+      checkState()
+    })
+    return localDescriptionSignal(peerConnection)
+  }
+
+  const emitLocalDescriptionSignal = async (): Promise<SdpDescription> => {
+    const signal = shouldTrickleIce
+      ? localDescriptionSignal(pc)
+      : await waitForIceGathering(pc)
+
+    if (!didEmitClose) {
+      emitSignal(signal)
+    }
+    return signal
+  }
+
+  if (initiator) {
+    dataChannel = pc.createDataChannel('data')
+    setupDataChannel(dataChannel)
+  } else {
+    pc.ondatachannel = ({channel}) => {
+      dataChannel = channel
+      setupDataChannel(channel)
+    }
+  }
+
+  const createOffer = async (restartIce = false): Promise<Signal | void> => {
+    if (
+      pc.connectionState === 'closed' ||
+      (!restartIce && (makingOffer || pc.signalingState !== 'stable'))
+    ) {
+      if (pc.connectionState === 'closed') {
+        settleInitialOffer()
+      }
+      return
+    }
+
+    try {
+      makingOffer = true
+
+      if (restartIce) {
+        // Rolling back the first unanswered offer can discard its data m-line.
+        if (
+          pc.remoteDescription &&
+          pc.signalingState !== 'stable' &&
+          pc.signalingState !== 'closed' &&
+          pc.localDescription?.type === offerType
+        ) {
+          await pc.setLocalDescription({type: 'rollback'})
+        }
+
+        if (typeof pc.restartIce === 'function') {
+          pc.restartIce()
+        }
+      }
+
+      await pc.setLocalDescription(
+        restartIce ? await pc.createOffer({iceRestart: true}) : undefined
+      )
+      const offer = await emitLocalDescriptionSignal()
+      return offer
+    } catch (err) {
+      if (!restartIce) {
+        settleInitialOffer()
+      }
+      handlers.error?.(toError(err, 'failed to create local offer'))
+    } finally {
+      makingOffer = false
+    }
+  }
+
+  pc.onnegotiationneeded = async () => createOffer(false)
+
+  pc.onicecandidate = ({candidate}) => {
+    if (!shouldTrickleIce || !candidate) {
+      return
+    }
+
+    const candidatePayload = normalizeCandidate(
+      typeof candidate.toJSON === 'function'
+        ? candidate.toJSON()
+        : {
+            candidate: candidate.candidate,
+            sdpMid: candidate.sdpMid,
+            sdpMLineIndex: candidate.sdpMLineIndex,
+            usernameFragment: candidate.usernameFragment
+          }
+    )
+
+    emitSignal({
+      type: candidateType,
+      sdp: JSON.stringify(candidatePayload)
+    })
+  }
+  const handleConnectionStateChange = () => {
+    if (
+      pc.connectionState === 'failed' ||
+      pc.connectionState === 'closed' ||
+      pc.iceConnectionState === 'failed' ||
+      pc.iceConnectionState === 'closed'
+    ) {
+      emitClose()
+      return
+    }
+
+    if (
+      pc.connectionState === 'connected' ||
+      pc.connectionState === 'connecting' ||
+      pc.iceConnectionState === 'connected' ||
+      pc.iceConnectionState === 'completed' ||
+      pc.iceConnectionState === 'checking'
+    ) {
+      clearDisconnectedCloseTimer()
+      return
+    }
+
+    if (
+      pc.connectionState === 'disconnected' ||
+      pc.iceConnectionState === 'disconnected'
+    ) {
+      if (!disconnectedCloseTimer) {
+        disconnectedCloseTimer = setTimeout(() => {
+          disconnectedCloseTimer = null
+
+          if (
+            pc.connectionState === 'disconnected' ||
+            pc.iceConnectionState === 'disconnected'
+          ) {
+            emitClose()
+          }
+        }, disconnectedCloseDelayMs)
+      }
+
+      return
+    }
+  }
+
+  pc.onconnectionstatechange = handleConnectionStateChange
+  pc.addEventListener(iceConnectionStateEvent, handleConnectionStateChange)
+
+  pc.ontrack = e => {
+    const stream = e.streams[0]
+
+    if (stream) {
+      if (!handlers.track && !handlers.stream) {
+        pendingTracks.push({track: e.track, stream})
+        return
+      }
+
+      handlers.track?.(e.track, stream)
+      handlers.stream?.(stream)
+    }
+  }
+  const offerPromise = initiator
+    ? new Promise<Signal | void>(res => {
+        resolveInitialOffer = res
+      })
+    : Promise.resolve()
+
+  if (initiator) {
+    queueMicrotask(() => {
+      if (
+        !makingOffer &&
+        pc.signalingState === 'stable' &&
+        !pc.localDescription &&
+        pc.connectionState !== 'closed'
+      ) {
+        void pc.onnegotiationneeded?.(new Event('negotiationneeded'))
+      }
+    })
+  }
+
+  return {
+    connection: pc,
+
+    get channel(): RTCDataChannel | null {
+      return dataChannel
+    },
+
+    get isDead(): boolean {
+      return pc.connectionState === 'closed'
+    },
+
+    getOffer: async (restartIce = false): Promise<Signal | void> => {
+      if (!initiator) {
+        return
+      }
+
+      if (restartIce) {
+        return createOffer(true)
+      }
+
+      if (resolveInitialOffer) {
+        return offerPromise
+      }
+
+      if (pc.localDescription?.type === offerType) {
+        return shouldTrickleIce
+          ? localDescriptionSignal(pc)
+          : waitForIceGathering(pc)
+      }
+
+      return offerPromise
+    },
+
+    async signal(sdp: Signal): Promise<Signal | void> {
+      if (sdp.type === candidateType) {
+        if (sdp.sdp.length > maxRemoteCandidateSdpLength) {
+          return
+        }
+
+        try {
+          const candidate = JSON.parse(sdp.sdp) as RTCIceCandidateInit | null
+
+          if (candidate && typeof candidate === 'object') {
+            await addRemoteCandidate(normalizeCandidate(candidate))
+          }
+        } catch (err) {
+          handlers.error?.(toError(err, 'failed to parse remote candidate'))
+        }
+
+        return
+      }
+
+      if (
+        dataChannel?.readyState === 'open' &&
+        !sdp.sdp?.includes('a=rtpmap')
+      ) {
+        return
+      }
+
+      try {
+        const rtcSdp: RTCSessionDescriptionInit = {
+          ...sdp,
+          sdp: normalizeSdp(sdp.sdp)
+        }
+
+        if (sdp.type === offerType) {
+          const isCollision =
+            makingOffer ||
+            (pc.signalingState !== 'stable' && !isSettingRemoteAnswerPending)
+
+          if (isCollision && initiator) {
+            return
+          }
+
+          if (isCollision && pc.signalingState !== 'stable') {
+            await all([
+              pc.setLocalDescription({type: 'rollback'}),
+              pc.setRemoteDescription(rtcSdp)
+            ])
+          } else {
+            await pc.setRemoteDescription(rtcSdp)
+          }
+
+          await flushPendingRemoteCandidates()
+          await pc.setLocalDescription()
+          const answer = await emitLocalDescriptionSignal()
+
+          return answer
+        }
+
+        if (sdp.type === answerType) {
+          isSettingRemoteAnswerPending = true
+
+          try {
+            await pc.setRemoteDescription(rtcSdp)
+            await flushPendingRemoteCandidates()
+          } finally {
+            isSettingRemoteAnswerPending = false
+          }
+        }
+      } catch (err) {
+        handlers.error?.(toError(err, 'failed to apply remote signal'))
+      }
+    },
+
+    sendData: data => dataChannel?.send(data as unknown as never),
+
+    destroy: () => {
+      clearDisconnectedCloseTimer()
+      settleInitialOffer()
+      dataChannel?.close()
+      pc.close()
+      makingOffer = false
+      isSettingRemoteAnswerPending = false
+      emitClose()
+    },
+
+    setHandlers: newHandlers => {
+      const {signal, ...restHandlers} = newHandlers
+      Object.assign(handlers, restHandlers)
+
+      if (handlers.data && pendingData.length > 0) {
+        pendingDataTimer = resetTimer(pendingDataTimer)
+        const queued = pendingData.splice(0)
+        queued.forEach(data => handlers.data?.(data))
+      }
+
+      if (signal) {
+        appendSignalHandler(signal)
+      }
+
+      if ((handlers.track || handlers.stream) && pendingTracks.length > 0) {
+        const queued = pendingTracks.splice(0)
+        queued.forEach(({track, stream}) => {
+          handlers.track?.(track, stream)
+          handlers.stream?.(stream)
+        })
+      }
+    },
+
+    addStream: stream =>
+      stream.getTracks().forEach(track => pc.addTrack(track, stream)),
+
+    removeStream: stream =>
+      pc
+        .getSenders()
+        .filter(
+          sender => sender.track && stream.getTracks().includes(sender.track)
+        )
+        .forEach(sender => pc.removeTrack(sender)),
+
+    addTrack: (track, stream) => pc.addTrack(track, stream),
+
+    removeTrack: track => {
+      const sender = pc.getSenders().find(s => s.track === track)
+
+      if (sender) {
+        pc.removeTrack(sender)
+      }
+    },
+
+    replaceTrack: (oldTrack, newTrack) => {
+      const sender = pc.getSenders().find(s => s.track === oldTrack)
+
+      if (sender) {
+        return sender.replaceTrack(newTrack)
+      }
+
+      return undefined
+    }
+  }
+}
+
+export const defaultIceServers: RTCIceServer[] = [
+  ...alloc(3, (_, i) => `stun:stun${i || ''}.l.google.com:19302`),
+  'stun:stun.cloudflare.com:3478'
+].map(url => ({urls: url}))
