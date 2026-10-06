@@ -13,7 +13,7 @@
 // If the host leaves, the remaining participant with the smallest id becomes
 // the new host, so the session keeps going.
 
-import { SongDocument, DuetHooks, DuetPointer, DuetRemotePointer } from "./SongDocument";
+import { SongDocument, DuetHooks, DuetPointer, DuetPreview, DuetRemotePointer } from "./SongDocument";
 import { DuetNetwork, duetSelfId, formatInviteCode, generateInviteCode, makeInviteLink, setInviteCodeInUrl } from "./DuetNetwork";
 import { mergeSongs } from "./DuetMerge";
 import { Song } from "../synth/synth";
@@ -66,6 +66,40 @@ function assignColors(ids: string[]): Map<string, string> {
 		result.set(id, duetColors[index]);
 	}
 	return result;
+}
+
+/** Rounds a pointer before sending it, so tiny movements don't each need a message. */
+function roundPointer(pointer: DuetPointer): any {
+	// Fractions of an element need more digits than parts, pitches, bars and channels.
+	const scale: number = pointer.area == "ui" ? 1000 : 100;
+	const result: any = { area: pointer.area, channel: pointer.channel, bar: pointer.bar, x: Math.round(pointer.x * scale) / scale, y: Math.round(pointer.y * scale) / scale };
+	if (pointer.path != undefined) result.path = pointer.path;
+	if (pointer.preview != undefined) result.preview = pointer.preview;
+	return result;
+}
+
+const maximumPreviewPins: number = 64;
+
+function readPreviewNumber(value: any): number {
+	return typeof value == "number" && Math.abs(value) <= 10000 ? value : NaN;
+}
+
+/** Checks a hover preview from someone else, since it comes from the network. */
+function readPreview(value: any): DuetPreview | null {
+	if (value == null || typeof value != "object") return null;
+	if (value.kind == "note") {
+		if (!Array.isArray(value.pins) || value.pins.length < 6 || value.pins.length > maximumPreviewPins * 3 || value.pins.length % 3 != 0) return null;
+		const pins: number[] = value.pins.map(readPreviewNumber);
+		const preview: DuetPreview = { kind: "note", pitch: readPreviewNumber(value.pitch), start: readPreviewNumber(value.start), pins: pins };
+		return isNaN(preview.pitch) || isNaN(preview.start) || pins.some(isNaN) ? null : preview;
+	} else if (value.kind == "range") {
+		const preview: DuetPreview = { kind: "range", start: readPreviewNumber(value.start), end: readPreviewNumber(value.end) };
+		return isNaN(preview.start) || isNaN(preview.end) ? null : preview;
+	} else if (value.kind == "edge") {
+		const preview: DuetPreview = { kind: "edge", at: readPreviewNumber(value.at) };
+		return isNaN(preview.at) ? null : preview;
+	}
+	return null;
 }
 
 export interface DuetPeer {
@@ -121,8 +155,8 @@ export class DuetSession implements DuetHooks {
 	public onChange: (() => void) | null = null;
 	/** Called when someone's mouse pointer moves. */
 	public onPointersChanged: (() => void) | null = null;
-	/** Converts a local pointer event into song terms, or null when it isn't over an editor. */
-	public pointerLocator: ((event: PointerEvent) => DuetPointer | null) | null = null;
+	/** Converts a local pointer position (client coordinates) into something other people's screens can show, or null. */
+	public pointerLocator: ((clientX: number, clientY: number) => DuetPointer | null) | null = null;
 
 	private readonly _doc: SongDocument;
 	private readonly _network: DuetNetwork;
@@ -155,8 +189,8 @@ export class DuetSession implements DuetHooks {
 	private _takeoverTimer: number | null = null;
 	private _electionTimer: number | null = null;
 
-	private _sentPointer: string = "";
-	private _pendingPointer: DuetPointer | null = null;
+	private _sentPointer: string = "null";
+	private _pointerClient: { x: number, y: number } | null = null;
 	private _pointerTimer: number | null = null;
 	private _sentChannel: number = -1;
 	private _sentBar: number = -1;
@@ -183,6 +217,7 @@ export class DuetSession implements DuetHooks {
 		window.addEventListener("pointercancel", this._whenPointerUp, true);
 		window.addEventListener("pointermove", this._whenPointerMoved, { capture: true, passive: true });
 		document.documentElement.addEventListener("pointerleave", this._whenPointerLeft);
+		window.addEventListener("scroll", this.refreshPointer, { capture: true, passive: true });
 		window.addEventListener("beforeunload", this._whenUnloading);
 		window.addEventListener("pagehide", this._whenPageHidden);
 
@@ -246,6 +281,7 @@ export class DuetSession implements DuetHooks {
 		window.removeEventListener("pointercancel", this._whenPointerUp, true);
 		window.removeEventListener("pointermove", this._whenPointerMoved, { capture: true } as EventListenerOptions);
 		document.documentElement.removeEventListener("pointerleave", this._whenPointerLeft);
+		window.removeEventListener("scroll", this.refreshPointer, { capture: true } as EventListenerOptions);
 		window.removeEventListener("beforeunload", this._whenUnloading);
 		window.removeEventListener("pagehide", this._whenPageHidden);
 		for (const timer of [this._broadcastTimer, this._retryTimer, this._presenceTimer, this._takeoverTimer, this._electionTimer, this._pointerTimer]) {
@@ -419,6 +455,8 @@ export class DuetSession implements DuetHooks {
 			this._updateColors();
 			// Make sure the newcomer knows about us too.
 			this._network.send(this._hello(), from);
+			const pointer: DuetPointer | null = this._locatePointer();
+			if (pointer != null) this._network.send({ t: "pointer", pointer: roundPointer(pointer) }, from);
 		}
 		peer.name = cleanDuetName(message.name);
 		peer.compatible = message.proto == protocolVersion;
@@ -639,44 +677,69 @@ export class DuetSession implements DuetHooks {
 		}
 	}
 
-	private _whenPointerDown = (): void => {
+	private _whenPointerDown = (event: PointerEvent): void => {
 		this._pointerDown = true;
+		this._whenPointerMoved(event);
 	}
 
-	private _whenPointerUp = (): void => {
+	private _whenPointerUp = (event: PointerEvent): void => {
 		this._pointerDown = false;
+		this._whenPointerMoved(event);
 		// Give mouseup handlers a chance to commit the edit that the drag made.
 		window.setTimeout(this._processQueue, 30);
 	}
 
 	private _readPointer(value: any): DuetPointer | null {
-		if (value == null || typeof value != "object" || (value.area != "pattern" && value.area != "track")) return null;
+		if (value == null || typeof value != "object" || (value.area != "pattern" && value.area != "track" && value.area != "ui")) return null;
 		const pointer: DuetPointer = { area: value.area, channel: Number(value.channel) | 0, bar: Number(value.bar) | 0, x: Number(value.x), y: Number(value.y) };
-		return isFinite(pointer.x) && isFinite(pointer.y) ? pointer : null;
+		if (!isFinite(pointer.x) || !isFinite(pointer.y)) return null;
+		if (pointer.area == "ui") {
+			if (typeof value.path != "string" || !/^([eb]|@[a-z-]{1,30})(\.\d{1,4}){0,60}$/.test(value.path)) return null;
+			pointer.path = value.path;
+		}
+		if (pointer.area == "pattern" && value.preview != null) {
+			const preview: DuetPreview | null = readPreview(value.preview);
+			if (preview != null) pointer.preview = preview;
+		}
+		return pointer;
 	}
 
 	private _whenPointerMoved = (event: PointerEvent): void => {
-		this._queuePointer(this.pointerLocator == null ? null : this.pointerLocator(event));
+		this._pointerClient = { x: event.clientX, y: event.clientY };
+		this._schedulePointer();
 	}
 
 	private _whenPointerLeft = (): void => {
-		this._queuePointer(null);
+		this._pointerClient = null;
+		this._schedulePointer();
 	}
 
-	private _queuePointer(pointer: DuetPointer | null): void {
+	/** Sends our pointer again if what's under it may have changed, e.g. after an edit or scrolling. */
+	public refreshPointer = (): void => {
+		if (this._pointerClient != null) this._schedulePointer();
+	}
+
+	private _schedulePointer(): void {
+		if (this._ended || this._pointerTimer != null) return;
+		this._pointerTimer = window.setTimeout(this._sendPointer, pointerDelay);
+	}
+
+	private _locatePointer(): DuetPointer | null {
+		const client: { x: number, y: number } | null = this._pointerClient;
+		return client == null || this.pointerLocator == null ? null : this.pointerLocator(client.x, client.y);
+	}
+
+	private _sendPointer = (): void => {
+		this._pointerTimer = null;
 		if (this._ended) return;
-		this._pendingPointer = pointer;
-		if (this._pointerTimer != null) return;
-		this._pointerTimer = window.setTimeout(() => {
-			this._pointerTimer = null;
-			if (this._ended) return;
-			const pointer: DuetPointer | null = this._pendingPointer;
-			const rounded: any = pointer == null ? null : { area: pointer.area, channel: pointer.channel, bar: pointer.bar, x: Math.round(pointer.x * 100) / 100, y: Math.round(pointer.y * 100) / 100 };
-			const key: string = JSON.stringify(rounded);
-			if (key == this._sentPointer || this.getPeers().length == 0) return;
-			this._sentPointer = key;
-			this._network.send({ t: "pointer", pointer: rounded });
-		}, pointerDelay);
+		// Located when sending rather than when the pointer moved, so the editors have
+		// already handled the move (e.g. updated the note preview).
+		const pointer: DuetPointer | null = this._locatePointer();
+		const key: string = JSON.stringify(pointer == null ? null : roundPointer(pointer));
+		if (key == this._sentPointer) return;
+		// Kept up to date even when nobody else is here, so it's right when someone joins.
+		this._sentPointer = key;
+		if (this.getPeers().length > 0) this._network.send({ t: "pointer", pointer: JSON.parse(key) });
 	}
 
 	private _whenPageHidden = (event: PageTransitionEvent): void => {
@@ -727,7 +790,7 @@ export class DuetController {
 	public session: DuetSession | null = null;
 	/** An invite code from the page URL, waiting for the user to confirm joining. */
 	public pendingInviteCode: string | null = null;
-	public pointerLocator: ((event: PointerEvent) => DuetPointer | null) | null = null;
+	public pointerLocator: ((clientX: number, clientY: number) => DuetPointer | null) | null = null;
 	public onPointersChanged: (() => void) | null = null;
 	private readonly _listeners: (() => void)[] = [];
 
@@ -751,6 +814,11 @@ export class DuetController {
 		this._notify();
 	}
 
+	/** Sends our pointer again if what's under it may have changed, e.g. after an edit. */
+	public refreshPointer(): void {
+		if (this.session != null) this.session.refreshPointer();
+	}
+
 	public listen(listener: () => void): void {
 		if (this._listeners.indexOf(listener) == -1) this._listeners.push(listener);
 	}
@@ -764,7 +832,7 @@ export class DuetController {
 		this.session = session;
 		this.pendingInviteCode = null;
 		session.onChange = () => this._notify();
-		session.pointerLocator = (event: PointerEvent) => this.pointerLocator == null ? null : this.pointerLocator(event);
+		session.pointerLocator = (clientX: number, clientY: number) => this.pointerLocator == null ? null : this.pointerLocator(clientX, clientY);
 		session.onPointersChanged = () => { if (this.onPointersChanged != null) this.onPointersChanged(); };
 		setInviteCodeInUrl(session.code);
 		this._notify();

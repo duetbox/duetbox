@@ -31,15 +31,28 @@ export interface DuetHooks {
  * A mouse pointer position in song terms, so it can be shown in the right place on
  * screens of any size. Over the pattern editor, x is the time in parts and y is the
  * pitch (or drum/modulator row). Over the track editor, x is the bar and y is the
- * channel, both with fractions.
+ * channel, both with fractions. Anywhere else ("ui"), path says which element of the
+ * page the pointer is over and x and y are fractions of that element's size.
  */
 export interface DuetPointer {
-	area: "pattern" | "track";
+	area: "pattern" | "track" | "ui";
 	channel: number;
 	bar: number;
 	x: number;
 	y: number;
+	path?: string;
+	preview?: DuetPreview;
 }
+
+/**
+ * What the pattern editor's hover preview shows: the note that a click would add
+ * (absolute pitch, start part, and pins as time/interval/size triples), the
+ * selected range, or one edge of the selection.
+ */
+export type DuetPreview =
+	{ kind: "note", pitch: number, start: number, pins: number[] } |
+	{ kind: "range", start: number, end: number } |
+	{ kind: "edge", at: number };
 
 export interface DuetRemotePointer extends DuetPointer {
 	color: string;
