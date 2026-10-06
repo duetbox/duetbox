@@ -3069,7 +3069,9 @@ export class Song {
         }
     }
 
-    public toBase64String(): string {
+    // DuetBox: when instrumentRanges is provided, it receives the [start, end) character range of each
+    // instrument's encoded settings in the returned string, indexed by [channel][instrument].
+    public toBase64String(instrumentRanges?: [number, number][][]): string {
         let bits: BitFieldWriter;
         let buffer: number[] = [];
 
@@ -3142,8 +3144,10 @@ export class Song {
         }
 
         for (let channelIndex: number = 0; channelIndex < this.getChannelCount(); channelIndex++) {
+            if (instrumentRanges != undefined) instrumentRanges[channelIndex] = [];
             for (let i: number = 0; i < this.channels[channelIndex].instruments.length; i++) {
                 const instrument: Instrument = this.channels[channelIndex].instruments[i];
+                const instrumentStart: number = buffer.length;
                 buffer.push(SongTagCode.startInstrument, base64IntToCharCode[instrument.type]);
                 buffer.push(SongTagCode.volume, base64IntToCharCode[(instrument.volume + Config.volumeRange / 2) >> 6], base64IntToCharCode[(instrument.volume + Config.volumeRange / 2) & 0x3f]);
                 buffer.push(SongTagCode.preset, base64IntToCharCode[instrument.preset >> 6], base64IntToCharCode[instrument.preset & 63]);
@@ -3469,6 +3473,7 @@ export class Song {
                     }
                     buffer.push(base64IntToCharCode[instrument.envelopes[envelopeIndex].envelope]);
                 }
+                if (instrumentRanges != undefined) instrumentRanges[channelIndex].push([instrumentStart, buffer.length]);
             }
         }
 

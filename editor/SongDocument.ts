@@ -13,6 +13,39 @@ import { Change } from "./Change";
 import { ChangeNotifier } from "./ChangeNotifier";
 import { ChangeSong, setDefaultInstruments, discardInvalidPatternInstruments, ChangeHoldingModRecording} from "./changes";
 
+// DuetBox: lets a collaborative session observe local edits and control what undo/redo restores.
+export interface DuetHooks {
+	/** Called after a local edit has been committed, with the resulting song. */
+	onLocalCommit(hash: string, sequenceNumber: number): void;
+	/** Called when the browser history state is about to be pushed, which discards the redo history. */
+	onHistoryPush(): void;
+	/** Called when undo/redo or a closing prompt moves through the history. Returns the song to show. */
+	onHistoryNavigation(fromSequenceNumber: number, toSequenceNumber: number): string;
+	/** Where the other people in the session are, for the track editor. */
+	getCollaboratorPositions(): {channel: number, bar: number, color: string, name: string}[];
+	/** The other people's mouse pointers. */
+	getRemotePointers(): DuetRemotePointer[];
+}
+
+/**
+ * A mouse pointer position in song terms, so it can be shown in the right place on
+ * screens of any size. Over the pattern editor, x is the time in parts and y is the
+ * pitch (or drum/modulator row). Over the track editor, x is the bar and y is the
+ * channel, both with fractions.
+ */
+export interface DuetPointer {
+	area: "pattern" | "track";
+	channel: number;
+	bar: number;
+	x: number;
+	y: number;
+}
+
+export interface DuetRemotePointer extends DuetPointer {
+	color: string;
+	name: string;
+}
+
 interface HistoryState {
 	canUndo: boolean;
 	sequenceNumber: number;
@@ -61,6 +94,7 @@ export class SongDocument {
 	private _stateShouldBePushed: boolean = false;
 	private _recordedNewSong: boolean = false;
 	public _waitingToUpdateState: boolean = false;
+	public duet: DuetHooks | null = null;
 		
 	constructor() {
 		this.notifier.watch(this._validateDocState);
@@ -165,6 +199,7 @@ export class SongDocument {
 	}
 		
 	private _pushState(state: HistoryState, hash: string): void {
+		if (this.duet != null) this.duet.onHistoryPush();
 		if (this.prefs.displayBrowserUrl) {
 			window.history.pushState(state, "", "#" + hash);
 		} else {
@@ -232,11 +267,13 @@ export class SongDocument {
 				errorAlert(error);
 			}
 			this.prompt = state.prompt;
+			const hash: string = this.song.toBase64String();
 			if (this.prefs.displayBrowserUrl) {
-				this._replaceState(state, this.song.toBase64String());
+				this._replaceState(state, hash);
 			} else {
-				this._pushState(state, this.song.toBase64String());
+				this._pushState(state, hash);
 			}
+			if (this.duet != null) this.duet.onLocalCommit(hash, this._sequenceNumber);
 			this.forgetLastChange();
 			this.notifier.notifyWatchers();
 			// Stop playing, and go to start when pasting new song in.
@@ -251,13 +288,25 @@ export class SongDocument {
 		// Abort if we've already handled the current state. 
 		if (state.sequenceNumber == this._sequenceNumber) return;
 			
+		const previousSequenceNumber: number = this._sequenceNumber;
 		this.bar = state.bar;
 		this.channel = state.channel;
 		this.viewedInstrument[this.channel] = state.instrument;
 		this._sequenceNumber = state.sequenceNumber;
 		this.prompt = state.prompt;
 		try {
-			new ChangeSong(this, this._getHash());
+			if (this.duet != null) {
+				// In a collaborative session, history entries may be missing other people's
+				// edits, so the session works out which song undo/redo should restore.
+				const hash: string = this.duet.onHistoryNavigation(previousSequenceNumber, state.sequenceNumber);
+				if (hash != this.song.toBase64String()) new ChangeSong(this, hash);
+				// Keep saving recovery versions under the shared song, not whatever song this entry had before.
+				state.recoveryUid = this._recoveryUid;
+				this._replaceState(state, this.song.toBase64String());
+				this.notifier.changed();
+			} else {
+				new ChangeSong(this, this._getHash());
+			}
 		} catch (error) {
 			errorAlert(error);
 		}
@@ -346,6 +395,8 @@ export class SongDocument {
 	}
 		
 	private _updateHistoryState = (): void => {
+		// Already done by flushPendingHistory().
+		if (!this._waitingToUpdateState) return;
 		this._waitingToUpdateState = false;
 		let hash: string;
 		try {
@@ -369,6 +420,41 @@ export class SongDocument {
 		}
 		this._stateShouldBePushed = false;
 		this._recordedNewSong = false;
+		if (this.duet != null) this.duet.onLocalCommit(hash, this._sequenceNumber);
+	}
+
+	/** Commits the history entry for edits that are still waiting for the next animation frame. */
+	public flushPendingHistory(): void {
+		this._updateHistoryState();
+	}
+
+	/**
+	 * DuetBox: shows a song that came from collaborators. Unlike ChangeSong, this
+	 * doesn't add an undo step or scroll the track editor, so remote edits don't
+	 * get in the way of what the user is doing. Returns the song as now loaded.
+	 */
+	public applyDuetSong(hash: string, isNewSong: boolean): string {
+		const pitchChannelCount: number = this.song.pitchChannelCount;
+		const noiseChannelCount: number = this.song.noiseChannelCount;
+		const modChannelCount: number = this.song.modChannelCount;
+		this.song.fromBase64String(hash);
+		if (pitchChannelCount != this.song.pitchChannelCount || noiseChannelCount != this.song.noiseChannelCount || modChannelCount != this.song.modChannelCount) {
+			ColorConfig.resetColors();
+		}
+		this.channel = Math.min(this.channel, this.song.getChannelCount() - 1);
+		this.bar = Math.max(0, Math.min(this.song.barCount - 1, this.bar));
+		this.synth.computeLatestModValues();
+
+		const normalizedHash: string = this.song.toBase64String();
+		if (isNewSong) this._resetSongRecoveryUid();
+		this._recovery.saveVersion(this._recoveryUid, this.song.title, normalizedHash);
+		const current: HistoryState | null = this._getHistoryState();
+		const state: HistoryState = {canUndo: current != null && current.canUndo, sequenceNumber: this._sequenceNumber, bar: this.bar, channel: this.channel, instrument: this.viewedInstrument[this.channel], recoveryUid: this._recoveryUid, prompt: this.prompt, selection: this.selection.toJSON()};
+		this._replaceState(state, normalizedHash);
+		this.forgetLastChange();
+		this.notifier.changed();
+		this.notifier.notifyWatchers();
+		return normalizedHash;
 	}
 		
 	public record(change: Change, replace: boolean = false, newSong: boolean = false): void {

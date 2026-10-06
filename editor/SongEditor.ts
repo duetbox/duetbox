@@ -54,6 +54,8 @@ import { VisualLoopControlsPrompt } from "./VisualLoopControlsPrompt";
 import { SampleLoadingStatusPrompt } from "./SampleLoadingStatusPrompt";
 import { AddSamplesPrompt } from "./AddSamplesPrompt";
 import { ShortenerConfigPrompt } from "./ShortenerConfigPrompt";
+import { DuetController, DuetSession } from "./DuetSession";
+import { DuetPrompt, duetStatusColor, duetStatusText } from "./DuetPrompt";
 
 const { button, div, input, select, span, optgroup, option, canvas } = HTML;
 
@@ -1262,6 +1264,11 @@ export class SongEditor {
         this._barScrollBar.container,
     );
 
+    private readonly _duet: DuetController = new DuetController(this._doc);
+    private readonly _duetStatusDot: HTMLSpanElement = span({ class: "duetStatusDot" });
+    private readonly _duetButtonLabel: HTMLSpanElement = span("Duet");
+    private readonly _duetButton: HTMLButtonElement = button({ class: "duetButton", title: "Edit this song with friends in real time" }, this._duetStatusDot, this._duetButtonLabel);
+
     private readonly _menuArea: HTMLDivElement = div({ class: "menu-area" },
         div({ class: "selectContainer menu file" },
             this._fileMenu,
@@ -1272,6 +1279,7 @@ export class SongEditor {
         div({ class: "selectContainer menu preferences" },
             this._optionsMenu,
         ),
+        this._duetButton,
     );
 
     private readonly _sampleLoadingBar: HTMLDivElement = div({ style: `width: 0%; height: 100%; background-color: ${ColorConfig.sampleLoaded};` });
@@ -1568,6 +1576,14 @@ export class SongEditor {
         this._pitchShiftSlider.container.style.setProperty("transform", "translate(0px, 3px)");
         this._pitchShiftSlider.container.style.setProperty("width", "100%");
 
+        this._duetButton.addEventListener("click", () => this._openPrompt("duet"));
+        this._duet.listen(this._renderDuetButton);
+        this._renderDuetButton();
+        this._duet.pointerLocator = (event: PointerEvent) => this._patternEditor.getPointerPosition(event) || this._trackEditor.getPointerPosition(event);
+        this._duet.onPointersChanged = () => {
+            this._patternEditor.renderRemotePointers();
+            this._trackEditor.renderRemotePointers();
+        };
         this._fileMenu.addEventListener("change", this._fileMenuHandler);
         this._editMenu.addEventListener("change", this._editMenuHandler);
         this._optionsMenu.addEventListener("change", this._optionsMenuHandler);
@@ -2001,6 +2017,25 @@ export class SongEditor {
 
     }
 
+    /** Opens the duet window, ready to join the session from an invite link. */
+    public openDuetInvite(code: string): void {
+        this._duet.pendingInviteCode = code;
+        this._openPrompt("duet");
+    }
+
+    private _renderDuetButton = (): void => {
+        const session: DuetSession | null = this._duet.session;
+        if (session == null) {
+            this._duetStatusDot.style.display = "none";
+            this._duetButtonLabel.textContent = "Duet";
+            return;
+        }
+        const peopleCount: number = session.getPeers().length + 1;
+        this._duetStatusDot.style.display = "";
+        this._duetStatusDot.style.background = duetStatusColor(session);
+        this._duetButtonLabel.textContent = duetStatusText(session) + (peopleCount > 1 ? " · " + peopleCount : "");
+    }
+
     private _openPrompt(promptName: string): void {
         this._doc.openPrompt(promptName);
         this._setPrompt(promptName);
@@ -2105,6 +2140,9 @@ export class SongEditor {
                     break;
                 case "configureShortener":
                     this.prompt = new ShortenerConfigPrompt(this._doc);
+                    break;
+                case "duet":
+                    this.prompt = new DuetPrompt(this._doc, this._duet);
                     break;
                 default:
                     this.prompt = new TipPrompt(this._doc, promptName);

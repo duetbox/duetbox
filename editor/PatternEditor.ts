@@ -3,7 +3,8 @@
 import { getLocalStorageItem, Chord, Transition, Config } from "../synth/SynthConfig";
 import { NotePin, Note, makeNotePin, FilterSettings, Channel, Pattern, Instrument, FilterControlPoint } from "../synth/synth";
 import { ColorConfig } from "./ColorConfig";
-import { SongDocument } from "./SongDocument";
+import { DuetPointer, SongDocument } from "./SongDocument";
+import { DrawnPointer, drawPointers } from "./DuetPointers";
 import { Slider } from "./HTMLWrapper";
 import { SongEditor } from "./SongEditor";
 import { HTML, SVG } from "imperative-html/dist/esm/elements-strict";
@@ -42,6 +43,8 @@ export class PatternEditor {
     private readonly _svgBackground: SVGRectElement = SVG.rect({ x: "0", y: "0", "pointer-events": "none", fill: "url(#patternEditorNoteBackground" + this._barOffset + ")" });
     private _svgNoteContainer: SVGSVGElement = SVG.svg();
     private readonly _svgPlayhead: SVGRectElement = SVG.rect({ x: "0", y: "0", width: "4", fill: ColorConfig.playhead, "pointer-events": "none" });
+    // DuetBox: other people's mouse pointers.
+    private readonly _svgRemotePointers: SVGGElement = SVG.g({ "pointer-events": "none" });
     private readonly _selectionRect: SVGRectElement = SVG.rect({ class: "dashed-line dash-move", fill: ColorConfig.boxSelectionFill, stroke: ColorConfig.hoverPreview, "stroke-width": 2, "stroke-dasharray": "5, 3", "fill-opacity": "0.4", "pointer-events": "none", visibility: "hidden" });
     private readonly _svgPreview: SVGPathElement = SVG.path({ fill: "none", stroke: ColorConfig.hoverPreview, "stroke-width": "2", "pointer-events": "none" });
     public modDragValueLabel: HTMLDivElement = HTML.div({ width: "90", "text-anchor": "start", contenteditable: "true", style: "display: flex, justify-content: center; align-items:center; position:absolute; pointer-events: none;", "dominant-baseline": "central", });
@@ -56,6 +59,7 @@ export class PatternEditor {
         this._svgNoteContainer,
         this._svgPreview,
         this._svgPlayhead,
+        this._svgRemotePointers,
     );
     public readonly container: HTMLDivElement = HTML.div({ style: "height: 100%; overflow:hidden; position: relative; flex-grow: 1;" }, this._svg, this.modDragValueLabel);
 
@@ -2421,6 +2425,30 @@ export class PatternEditor {
         }
 
         this._redrawNotePatterns();
+        this.renderRemotePointers();
+    }
+
+    /** DuetBox: where a pointer event is over this pattern, in parts and pitches, or null if it's elsewhere. */
+    public getPointerPosition(event: PointerEvent): DuetPointer | null {
+        if (!this._interactive || this._barOffset != 0) return null;
+        const boundingRect: DOMRect = this._svg.getBoundingClientRect();
+        if (boundingRect.width == 0 || event.clientX < boundingRect.left || event.clientX > boundingRect.right || event.clientY < boundingRect.top || event.clientY > boundingRect.bottom) return null;
+        const pixelX: number = (event.clientX - boundingRect.left) * this._editorWidth / boundingRect.width;
+        const pixelY: number = (event.clientY - boundingRect.top) * this._editorHeight / boundingRect.height;
+        return { area: "pattern", channel: this._doc.channel, bar: this._doc.bar, x: pixelX / this._partWidth, y: this._pitchCount - pixelY / this._pitchHeight + this._octaveOffset };
+    }
+
+    /** DuetBox: draws the pointers of other people who are looking at the same pattern. */
+    public renderRemotePointers(): void {
+        if (!this._interactive || this._barOffset != 0) return;
+        const pointers: DrawnPointer[] = [];
+        if (this._doc.duet != null) {
+            for (const pointer of this._doc.duet.getRemotePointers()) {
+                if (pointer.area != "pattern" || pointer.channel != this._doc.channel || pointer.bar != this._doc.bar) continue;
+                pointers.push({ x: pointer.x * this._partWidth, y: this._pitchHeight * (this._pitchCount - (pointer.y - this._octaveOffset)), color: pointer.color, name: pointer.name });
+            }
+        }
+        drawPointers(this._svgRemotePointers, pointers, this._editorWidth, this._editorHeight);
     }
 
     private _redrawNotePatterns(): void {

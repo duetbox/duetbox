@@ -3,7 +3,8 @@
 import { ColorConfig } from "./ColorConfig";
 import { Config } from "../synth/SynthConfig";
 import { isMobile } from "./EditorConfig";
-import { SongDocument } from "./SongDocument";
+import { DuetPointer, SongDocument } from "./SongDocument";
+import { DrawnPointer, drawPointers } from "./DuetPointers";
 import { ChannelRow } from "./ChannelRow";
 import { SongEditor } from "./SongEditor";
 import { HTML, SVG } from "imperative-html/dist/esm/elements-strict";
@@ -23,14 +24,20 @@ export class TrackEditor {
 	private readonly _downHighlight: SVGPathElement = SVG.path({fill: ColorConfig.invertedText, stroke: ColorConfig.invertedText, "stroke-width": 1, "pointer-events": "none"});
 	private readonly _barEditorPath: SVGPathElement = SVG.path({ fill: ColorConfig.uiWidgetBackground, stroke: ColorConfig.uiWidgetBackground, "stroke-width": 1, "pointer-events": "none" });
 	private readonly _selectionRect: SVGRectElement = SVG.rect({ class: "dashed-line dash-move", fill: ColorConfig.boxSelectionFill, stroke: ColorConfig.hoverPreview, "stroke-width": 2, "stroke-dasharray": "5, 3", "fill-opacity": "0.4", "pointer-events": "none", visibility: "hidden", x: 1, y: 1, width: 62, height: 62 });
+	// DuetBox: outlines showing where collaborators are working.
+	private readonly _collaboratorContainer: SVGGElement = SVG.g({"pointer-events": "none"});
+	private readonly _remotePointers: SVGGElement = SVG.g({"pointer-events": "none"});
+	private _renderedCollaborators: string = "";
 	private readonly _svg: SVGSVGElement = SVG.svg({style: `position: absolute; top: 0;`},
 		this._barEditorPath,
 		this._selectionRect,
 		this._barNumberContainer,
+		this._collaboratorContainer,
 		this._boxHighlight,
 		this._upHighlight,
 		this._downHighlight,
 		this._playhead,
+		this._remotePointers,
 	);
 	private readonly _select: HTMLSelectElement = HTML.select({class: "trackSelectBox", style: "background: none; border: none; appearance: none; border-radius: initial; box-shadow: none; color: transparent; position: absolute; touch-action: none;"});
 	public readonly container: HTMLElement = HTML.div({class: "noSelection", style: `background-color: ${ColorConfig.editorBackground}; position: relative; overflow: hidden;`},
@@ -477,6 +484,51 @@ export class TrackEditor {
 			this._selectionRect.setAttribute("visibility", "hidden");
 		}
 			
+		this._renderCollaborators();
+		this.renderRemotePointers();
 		this._updatePreview();
+	}
+
+	/** DuetBox: where a pointer event is over the track editor, in bars and channels, or null if it's elsewhere. */
+	public getPointerPosition(event: PointerEvent): DuetPointer | null {
+		const boundingRect: DOMRect = this.container.getBoundingClientRect();
+		if (boundingRect.width == 0 || event.clientX < boundingRect.left || event.clientX > boundingRect.right || event.clientY < boundingRect.top || event.clientY > boundingRect.bottom) return null;
+		const channel: number = (event.clientY - boundingRect.top - Config.barEditorHeight) / ChannelRow.patternHeight;
+		return { area: "track", channel: this._doc.channel, bar: this._doc.bar, x: (event.clientX - boundingRect.left) / this._barWidth, y: channel };
+	}
+
+	/** DuetBox: draws other people's pointers over the track editor. */
+	public renderRemotePointers(): void {
+		const pointers: DrawnPointer[] = [];
+		if (this._doc.duet != null) {
+			for (const pointer of this._doc.duet.getRemotePointers()) {
+				if (pointer.area != "track") continue;
+				pointers.push({ x: pointer.x * this._barWidth, y: Config.barEditorHeight + pointer.y * ChannelRow.patternHeight, color: pointer.color, name: pointer.name });
+			}
+		}
+		drawPointers(this._remotePointers, pointers, this._barWidth * this._doc.song.barCount, Config.barEditorHeight + ChannelRow.patternHeight * this._doc.song.getChannelCount());
+	}
+
+	private _renderCollaborators(): void {
+		const positions = this._doc.duet == null ? [] : this._doc.duet.getCollaboratorPositions();
+		const key: string = this._barWidth + "," + ChannelRow.patternHeight + ";" + positions.map(p => [p.channel, p.bar, p.color, p.name].join(",")).join(";");
+		if (key == this._renderedCollaborators) return;
+		this._renderedCollaborators = key;
+		while (this._collaboratorContainer.firstChild != null) this._collaboratorContainer.removeChild(this._collaboratorContainer.firstChild);
+		// Several people on the same pattern get nested outlines so each stays visible.
+		const stacked: Map<string, number> = new Map();
+		for (const position of positions) {
+			const cell: string = position.channel + "," + position.bar;
+			const inset: number = 2 * (stacked.get(cell) || 0);
+			stacked.set(cell, (stacked.get(cell) || 0) + 1);
+			const x: number = this._barWidth * position.bar + 1 + inset;
+			const y: number = Config.barEditorHeight + ChannelRow.patternHeight * position.channel + 1 + inset;
+			const outline: SVGRectElement = SVG.rect({fill: "none", stroke: position.color, "stroke-width": 2, rx: 3, x: x, y: y, width: Math.max(2, this._barWidth - 2 - 2 * inset), height: Math.max(2, ChannelRow.patternHeight - 2 - 2 * inset)});
+			outline.appendChild(SVG.title(position.name));
+			this._collaboratorContainer.appendChild(outline);
+			if (inset == 0) {
+				this._collaboratorContainer.appendChild(SVG.circle({fill: position.color, cx: x + this._barWidth - 6, cy: y + 4, r: 3}));
+			}
+		}
 	}
 }

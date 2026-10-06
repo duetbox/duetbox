@@ -9,6 +9,7 @@ import {NotePin, Note, Pattern, Instrument, Channel, Song, Synth} from "../synth
 import {SongDocument} from "./SongDocument";
 import {ExportPrompt} from "./ExportPrompt";
 import {ChangePreset} from "./changes";
+import {getInviteCodeFromUrl} from "./DuetNetwork";
 
 
 //namespace beepbox {
@@ -19,6 +20,10 @@ const editor: SongEditor = new SongEditor(doc);//same as above
 const beepboxEditorContainer: HTMLElement = document.getElementById("beepboxEditorContainer")!;
 beepboxEditorContainer.appendChild(editor.mainLayer);
 editor.whenUpdated();
+
+// DuetBox: opened from an invite link, so offer to join the session.
+const duetInviteCode: string | null = getInviteCodeFromUrl();
+if (duetInviteCode != null) editor.openDuetInvite(duetInviteCode);
 
 // Fade-in transitions
 editor.mainLayer.className += " load";

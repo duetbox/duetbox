@@ -1381,6 +1381,19 @@ html {
 	padding: 0 var(--button-size);
 	white-space: nowrap;
 }
+.beepboxEditor .menu-area > button.duetButton {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.5em;
+	overflow: hidden;
+}
+.beepboxEditor .duetStatusDot {
+	flex-shrink: 0;
+	width: 0.6em;
+	height: 0.6em;
+	border-radius: 50%;
+}
 
 .beepboxEditor .song-settings-area {
 	display: flex;
