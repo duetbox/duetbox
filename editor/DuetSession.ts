@@ -22,6 +22,8 @@ const protocolVersion: number = 1;
 const maximumUndoSteps: number = 200;
 const maximumSnapshots: number = 100;
 const hostBroadcastDelay: number = 60;
+/** Slower when someone is connected through the relays, so whole songs aren't sent too often. */
+const relayedBroadcastDelay: number = 400;
 const presenceDelay: number = 100;
 const pointerDelay: number = 40;
 // If the host's connection drops without saying goodbye, give it this long to come back.
@@ -258,6 +260,11 @@ export class DuetSession implements DuetHooks {
 
 	public getRelayStatus(): { open: number, total: number } {
 		return this._network.getRelayStatus();
+	}
+
+	/** Whether someone is connected through the relays rather than directly. */
+	public isRelayed(peerId: string): boolean {
+		return this._network.isRelayed(peerId);
 	}
 
 	public setName(name: string): void {
@@ -573,7 +580,7 @@ export class DuetSession implements DuetHooks {
 			if (this._ended || !this.isHost || this._lastKnown == this._canonical) return;
 			this._publishVersion(this._lastKnown);
 			this._sendState(this._memberIds(), undefined);
-		}, hostBroadcastDelay);
+		}, this._network.hasRelayedPeers() ? relayedBroadcastDelay : hostBroadcastDelay);
 	}
 
 	private _receiveEdit(message: any, from: string): void {
@@ -614,6 +621,14 @@ export class DuetSession implements DuetHooks {
 			this._applyRemoteSong(message.song, true);
 			// Edits made before joining belong to the old song, so they can't be undone anymore.
 			this._undoSteps.length = 0;
+		} else if (Number(message.v) < this._confirmedVersion) {
+			// An older version that arrived late, e.g. through the relays just after a direct
+			// connection came up. Merging it would undo newer changes; only its acknowledgment matters.
+			if (message.ack != undefined && message.ack == this._inflightId && this._inflight != null) {
+				this._inflight = null;
+				this._sendEditIfNeeded();
+			}
+			return;
 		} else {
 			this._doc.flushPendingHistory();
 			const live: string = this._doc.song.toBase64String();

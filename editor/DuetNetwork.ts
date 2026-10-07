@@ -8,10 +8,13 @@
 // passes through a server. The invite code doubles as the room password, which
 // encrypts the connection handshakes that pass through the relays.
 
-import { joinRoom, getRelaySockets, selfId } from "../vendor/trystero/nostr";
+import { joinRoom, getRelaySockets, selfId, defaultRelayUrls } from "../vendor/trystero/nostr";
 import { JsonValue, MessageAction, Room, TurnServerConfig } from "../vendor/trystero/core/index";
+import { shuffle, strToNum } from "../vendor/trystero/core/utils";
+import { DuetRelay } from "./DuetRelay";
 
 const appId: string = "duetbox";
+const relayRedundancy: number = 6;
 // Songs are small, so anything much bigger than this is a mistake or abuse.
 const maxReceiveBytes: number = 16 * 1024 * 1024;
 const settingsKey: string = "duetboxNetworkSettings";
@@ -87,7 +90,11 @@ export function saveNetworkSettings(settings: DuetNetworkSettings): void {
 	window.localStorage.setItem(settingsKey, JSON.stringify(settings));
 }
 
-/** One person's connection to a room. */
+/**
+ * One person's connection to a room. People are connected directly (WebRTC) when their
+ * networks allow it, and otherwise through the relays (see DuetRelay); either way they
+ * appear here as the same peers.
+ */
 export class DuetNetwork {
 	public readonly selfId: string = selfId;
 	public onPeerJoin: ((peerId: string) => void) | null = null;
@@ -97,6 +104,11 @@ export class DuetNetwork {
 
 	private readonly _room: Room;
 	private readonly _action: MessageAction<JsonValue>;
+	private readonly _relay: DuetRelay;
+	/** People connected directly. */
+	private readonly _direct: Set<string> = new Set();
+	/** Everyone reachable one way or the other, as last reported to onPeerJoin/onPeerLeave. */
+	private readonly _peers: Set<string> = new Set();
 	private _left: boolean = false;
 
 	constructor(code: string, settings: DuetNetworkSettings = loadNetworkSettings()) {
@@ -104,7 +116,7 @@ export class DuetNetwork {
 			appId: appId,
 			password: code,
 			maxReceiveBytes: maxReceiveBytes,
-			relayConfig: settings.relayUrls.length > 0 ? { urls: settings.relayUrls } : { redundancy: 6 },
+			relayConfig: settings.relayUrls.length > 0 ? { urls: settings.relayUrls } : { redundancy: relayRedundancy },
 			turnConfig: settings.turnServers.length > 0 ? settings.turnServers : undefined,
 		}, "room-" + code, {
 			onJoinError: (details) => {
@@ -112,29 +124,70 @@ export class DuetNetwork {
 			},
 		});
 		this._action = this._room.makeAction<JsonValue>("duet");
-		this._action.onMessage = (data: JsonValue, context) => {
-			if (this._left || this.onMessage == null || data == null || typeof data != "object" || Array.isArray(data)) return;
-			this.onMessage(data, context.peerId);
-		};
+		this._action.onMessage = (data: JsonValue, context) => this._receive(data, context.peerId);
 		this._room.onPeerJoin = (peerId: string) => {
-			if (!this._left && this.onPeerJoin != null) this.onPeerJoin(peerId);
+			this._direct.add(peerId);
+			this._updatePeer(peerId);
 		};
 		this._room.onPeerLeave = (peerId: string) => {
-			if (!this._left && this.onPeerLeave != null) this.onPeerLeave(peerId);
+			this._direct.delete(peerId);
+			this._updatePeer(peerId);
 		};
+
+		// The same relays that Trystero picks for this app, so everyone in the room shares them.
+		const relayUrls: string[] = settings.relayUrls.length > 0 ? settings.relayUrls : shuffle(defaultRelayUrls, strToNum(appId)).slice(0, relayRedundancy);
+		this._relay = new DuetRelay(code, relayUrls, selfId, (peerId: string) => this._peers.has(peerId));
+		this._relay.onMessage = (message: any, peerId: string) => this._receive(message, peerId);
+		this._relay.onPeersChanged = () => {
+			for (const peerId of new Set(this._relay.getPeerIds().concat(Array.from(this._peers)))) this._updatePeer(peerId);
+		};
+	}
+
+	private _receive(data: any, peerId: string): void {
+		if (this._left || this.onMessage == null || data == null || typeof data != "object" || Array.isArray(data)) return;
+		this.onMessage(data, peerId);
+	}
+
+	/** Reports someone joining or leaving when they become reachable or unreachable both ways. */
+	private _updatePeer(peerId: string): void {
+		if (this._left) return;
+		const reachable: boolean = this._direct.has(peerId) || this._relay.isAvailable(peerId);
+		if (reachable && !this._peers.has(peerId)) {
+			this._peers.add(peerId);
+			if (this.onPeerJoin != null) this.onPeerJoin(peerId);
+			// Anything they sent through the relays while we were waiting for a direct connection.
+			this._relay.deliverHeld(peerId);
+		} else if (!reachable && this._peers.has(peerId)) {
+			this._peers.delete(peerId);
+			if (this.onPeerLeave != null) this.onPeerLeave(peerId);
+		}
 	}
 
 	/** Sends a message to one peer, a list of peers, or everyone when target is omitted. */
 	public send(message: JsonValue, target?: string | string[]): void {
 		if (this._left) return;
-		if (Array.isArray(target) && target.length == 0) return;
-		this._action.send(message, target == undefined ? undefined : { target: target }).catch((error: any) => {
-			console.warn("DuetBox: failed to send a message", error);
-		});
+		const targets: string[] = target == undefined ? Array.from(this._peers) : typeof target == "string" ? [target] : target;
+		const direct: string[] = targets.filter(peerId => this._direct.has(peerId));
+		const relayed: string[] = targets.filter(peerId => !this._direct.has(peerId) && this._peers.has(peerId));
+		if (direct.length > 0) {
+			this._action.send(message, { target: direct }).catch((error: any) => {
+				console.warn("DuetBox: failed to send a message", error);
+			});
+		}
+		if (relayed.length > 0) this._relay.send(message, relayed);
 	}
 
 	public getPeerIds(): string[] {
-		return Object.keys(this._room.getPeers());
+		return Array.from(this._peers);
+	}
+
+	/** Whether someone can only be reached through the relays, which is slower. */
+	public isRelayed(peerId: string): boolean {
+		return this._peers.has(peerId) && !this._direct.has(peerId);
+	}
+
+	public hasRelayedPeers(): boolean {
+		return Array.from(this._peers).some(peerId => !this._direct.has(peerId));
 	}
 
 	/** How many of the matchmaking relays currently have an open connection. */
@@ -147,5 +200,6 @@ export class DuetNetwork {
 		if (this._left) return;
 		this._left = true;
 		this._room.leave().catch(() => {});
+		void this._relay.leave();
 	}
 }
