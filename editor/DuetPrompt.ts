@@ -194,7 +194,7 @@ export class DuetPrompt implements Prompt {
 	private _renderPeers(session: DuetSession): void {
 		const rows: HTMLElement[] = [this._peerRow(session.color, session.name + " (you)", session.isHost)];
 		for (const peer of session.getPeers()) {
-			rows.push(this._peerRow(peer.color, peer.name || "…", peer.isHost));
+			rows.push(this._peerRow(peer.color, (peer.name || "…") + (session.isRelayed(peer.id) ? " (via relay)" : ""), peer.isHost));
 		}
 		if (session.getIncompatiblePeerCount() > 0) {
 			rows.push(div({ style: dimStyle }, "Someone has a different DuetBox version."));

@@ -23,13 +23,17 @@ You can see each other's mouse pointers anywhere in the editor, along with the n
 ### How it works
 
 Rooms are peer to peer. DuetBox uses [Trystero](https://github.com/dmotz/trystero) to find the other people in a room through public [Nostr](https://nostr.com) relays, then connects everyone directly with WebRTC.
-Only the connection handshakes pass through the relays, and they're encrypted with the room code; the song itself goes straight between browsers.
+Usually only the connection handshakes pass through the relays, encrypted with the room code, and the song itself goes straight between browsers.
+
+Some networks don't allow direct connections between different networks (many mobile networks, some home routers, and most school or work networks).
+When two people can't connect directly within a few seconds, DuetBox sends their messages through the same relays instead, still encrypted with the room code.
+That's a little slower, and the Duet window shows "(via relay)" next to their name. If a direct connection works out later, DuetBox switches to it.
 
 One person in the room (whoever created it, or whoever took over) holds the official copy of the song. Everyone else sends their edits there, and the merged result goes back out to everyone.
 Edits are merged piece by piece: song settings, channel names, instruments, sequence cells, and individual notes. So two people can work on different things, or even on the same pattern, at the same time without losing each other's work.
 Only when two people change the very same thing at once does one of the changes win.
 
-If you can't connect from a strict school or work network, open **Connection settings** in the Duet window and add a TURN server. You can also choose your own Nostr relays there; everyone in a room needs the same relays.
+For a faster connection on those networks, open **Connection settings** in the Duet window and add a TURN server. You can also choose your own Nostr relays there; everyone in a room needs the same relays.
 
 ## Compiling
 
@@ -96,6 +100,7 @@ The duet feature lives in these editor files:
 - [DuetSession.ts](editor/DuetSession.ts): keeps the song in sync between everyone in a room.
 - [DuetMerge.ts](editor/DuetMerge.ts): combines edits that two people made to the same song at the same time.
 - [DuetNetwork.ts](editor/DuetNetwork.ts): room codes, invite links, and the Trystero connection.
+- [DuetRelay.ts](editor/DuetRelay.ts): carries messages through the relays for people who can't connect directly.
 - [DuetPrompt.ts](editor/DuetPrompt.ts): the Duet window.
 - [DuetPointers.ts](editor/DuetPointers.ts): draws other people's mouse pointers.
 
